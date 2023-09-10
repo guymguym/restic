@@ -592,6 +592,15 @@ func runBackup(ctx context.Context, opts BackupOptions, gopts GlobalOptions, ter
 		targets = []string{filename}
 	}
 
+	// TODO (guymguym) - add source url schemes
+	if true {
+		s3, err := fs.NewFS3()
+		if err != nil {
+			return err
+		}
+		targetFS = s3
+	}
+
 	wg, wgCtx := errgroup.WithContext(ctx)
 	cancelCtx, cancel := context.WithCancel(wgCtx)
 	defer cancel()
