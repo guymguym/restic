@@ -88,10 +88,10 @@ func NewFS3(u *url.URL) (*FS3, error) {
 	} else {
 		// using the url user as the profile/alias name in the credentials file
 		creds = credentials.NewChainCredentials([]credentials.Provider{
-			&credentials.EnvAWS{},
-			&credentials.EnvMinio{},
 			&credentials.FileAWSCredentials{Profile: username},
 			&credentials.FileMinioClient{Alias: username},
+			&credentials.EnvAWS{},
+			&credentials.EnvMinio{},
 			&credentials.IAM{
 				Client: &http.Client{
 					Transport: http.DefaultTransport,
