@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/restic/restic/internal/fs"
 	rtest "github.com/restic/restic/internal/test"
 )
 
@@ -64,7 +65,7 @@ func TestCollectTargets(t *testing.T) {
 		FilesFromRaw:      []string{f3.Name()},
 	}
 
-	targets, err := collectTargets(opts, []string{filepath.Join(dir, "cmdline arg")})
+	targets, err := collectTargets(fs.Local{}, opts, []string{filepath.Join(dir, "cmdline arg")})
 	rtest.OK(t, err)
 	sort.Strings(targets)
 	rtest.Equals(t, expect, targets)

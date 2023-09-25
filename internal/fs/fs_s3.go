@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,17 +48,17 @@ var _ FS = &FS3{}
 var _ File = &s3File{}
 var _ fs.FileInfo = s3FileInfo{}
 
-func (fs3 *FS3) Open(name string) (File, error)         { return fs3.OpenFile(name, 0, 0) }
-func (fs3 *FS3) Lstat(name string) (os.FileInfo, error) { return fs3.Stat(name) }
-
-func (fs3 *FS3) Separator() string               { return string(filepath.Separator) }
-func (fs3 *FS3) Join(elem ...string) string      { return filepath.Join(elem...) }
-func (fs3 *FS3) Abs(path string) (string, error) { return filepath.Abs(path) }
-func (fs3 *FS3) IsAbs(path string) bool          { return filepath.IsAbs(path) }
+func (fs3 *FS3) Separator() string               { return "/" }
+func (fs3 *FS3) VolumeName(path string) string   { return "" }
+func (fs3 *FS3) Join(elem ...string) string      { return strings.Join(elem, "/") }
+func (fs3 *FS3) IsAbs(path string) bool          { return strings.HasPrefix(path, "/") }
+func (fs3 *FS3) Abs(path string) (string, error) { return "/" + strings.TrimPrefix(path, "/"), nil }
 func (fs3 *FS3) Clean(p string) string           { return filepath.Clean(p) }
-func (fs3 *FS3) VolumeName(path string) string   { return filepath.VolumeName(path) }
 func (fs3 *FS3) Dir(path string) string          { return filepath.Dir(path) }
 func (fs3 *FS3) Base(path string) string         { return filepath.Base(path) }
+
+func (fs3 *FS3) Open(name string) (File, error)         { return fs3.OpenFile(name, 0, 0) }
+func (fs3 *FS3) Lstat(name string) (os.FileInfo, error) { return fs3.Stat(name) }
 
 func (f *s3File) Fd() uintptr  { return 0 }
 func (f *s3File) Name() string { return obj_file_name(f.bucket, f.key) }
@@ -70,16 +71,43 @@ func (f s3FileInfo) ModTime() time.Time { return f.modTime }
 func (f s3FileInfo) IsDir() bool        { return f.isDir }
 func (f s3FileInfo) Mode() fs.FileMode  { return obj_file_mode(f.isDir) }
 
-func NewFS3() (*FS3, error) {
-	endpoint := "localhost:6001"
+func NewFS3(u *url.URL) (*FS3, error) {
+
+	if u.Path != "" {
+		return nil, errors.Fatalf("s3 url should not have a path")
+	}
+
+	useHTTP := u.Scheme == "s3+http"
+	username := u.User.Username()
+	secret, hasSecret := u.User.Password()
+
+	var creds *credentials.Credentials
+	if username != "" && secret != "" && hasSecret {
+		// if a secret is provided in the url use static credentials
+		creds = credentials.NewStaticV4(username, secret, "")
+	} else {
+		// using the url user as the profile/alias name in the credentials file
+		creds = credentials.NewChainCredentials([]credentials.Provider{
+			&credentials.EnvAWS{},
+			&credentials.EnvMinio{},
+			&credentials.FileAWSCredentials{Profile: username},
+			&credentials.FileMinioClient{Alias: username},
+			&credentials.IAM{
+				Client: &http.Client{
+					Transport: http.DefaultTransport,
+				},
+			},
+		})
+	}
+
 	options := &minio.Options{
-		Creds:     credentials.NewStaticV4("test", "test", ""),
-		Secure:    false,
-		Region:    "test",
+		Creds:     creds,
+		Secure:    !useHTTP,
+		Region:    "global",
 		Transport: http.DefaultTransport,
 	}
 
-	client, err := minio.New(endpoint, options)
+	client, err := minio.New(u.Host, options)
 	if err != nil {
 		return nil, errors.Wrap(err, "minio.New")
 	}
@@ -342,14 +370,15 @@ func obj_file_name(bucket, key string) string {
 
 func obj_parse_path(path string) (bucket string, key string, err error) {
 	// Trim prefix of current working directory
-	if filepath.IsAbs(path) {
-		wd, _ := os.Getwd()
-		rel, err := filepath.Rel(wd, path)
-		if err != nil {
-			return "", "", err
-		}
-		path = rel
-	}
+	// if filepath.IsAbs(path) {
+	// 	wd, _ := os.Getwd()
+	// 	rel, err := filepath.Rel(wd, path)
+	// 	if err != nil {
+	// 		return "", "", err
+	// 	}
+	// 	path = rel
+	// }
+	path = strings.TrimPrefix(filepath.Clean(path), "/")
 
 	// Cut the path to bucket/key
 	bucket, key, _ = strings.Cut(path, "/")

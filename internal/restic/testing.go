@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/restic/chunker"
+	"github.com/restic/restic/internal/fs"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -123,7 +124,7 @@ func TestCreateSnapshot(t testing.TB, repo Repository, at time.Time, depth int) 
 	t.Logf("create fake snapshot at %s with seed %d", at, seed)
 
 	fakedir := fmt.Sprintf("fakedir-at-%v", at.Format("2006-01-02 15:04:05"))
-	snapshot, err := NewSnapshot([]string{fakedir}, []string{"test"}, "foo", at)
+	snapshot, err := NewSnapshot(fs.Local{}, []string{fakedir}, []string{"test"}, "foo", at)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os/user"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/restic/restic/internal/debug"
+	"github.com/restic/restic/internal/fs"
 )
 
 // Snapshot is the state of a resource at one point in time.
@@ -32,10 +32,10 @@ type Snapshot struct {
 
 // NewSnapshot returns an initialized snapshot struct for the current user and
 // time.
-func NewSnapshot(paths []string, tags []string, hostname string, time time.Time) (*Snapshot, error) {
+func NewSnapshot(targetFS fs.FS, paths []string, tags []string, hostname string, time time.Time) (*Snapshot, error) {
 	absPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
-		p, err := filepath.Abs(path)
+		p, err := targetFS.Abs(path)
 		if err == nil {
 			absPaths = append(absPaths, p)
 		} else {

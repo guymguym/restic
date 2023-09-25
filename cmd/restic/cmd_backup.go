@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -44,12 +45,16 @@ Exit status is 3 if some source data could not be read (incomplete snapshot crea
 `,
 	PreRun: func(_ *cobra.Command, _ []string) {
 		if backupOptions.Host == "" {
-			hostname, err := os.Hostname()
-			if err != nil {
-				debug.Log("os.Hostname() returned err: %v", err)
-				return
+			if backupOptions.TargetURL != "" {
+				backupOptions.Host = backupOptions.TargetURL
+			} else {
+				hostname, err := os.Hostname()
+				if err != nil {
+					debug.Log("os.Hostname() returned err: %v", err)
+					return
+				}
+				backupOptions.Host = hostname
 			}
-			backupOptions.Host = hostname
 		}
 	},
 	DisableAutoGenTag: true,
@@ -76,6 +81,7 @@ type BackupOptions struct {
 	StdinCommand      bool
 	Tags              restic.TagLists
 	Host              string
+	TargetURL         string
 	FilesFrom         []string
 	FilesFromVerbatim []string
 	FilesFromRaw      []string
@@ -121,6 +127,7 @@ func init() {
 		// MarkDeprecated only returns an error when the flag could not be found
 		panic(err)
 	}
+	f.StringVarP(&backupOptions.TargetURL, "target-url", "t", "", "base url to resolve target files for the backup (ex. 's3://user@endpoint') (default: local FS)")
 	f.StringArrayVar(&backupOptions.FilesFrom, "files-from", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromVerbatim, "files-from-verbatim", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromRaw, "files-from-raw", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
@@ -141,9 +148,9 @@ func init() {
 
 // filterExisting returns a slice of all existing items, or an error if no
 // items exist at all.
-func filterExisting(items []string) (result []string, err error) {
+func filterExisting(targetFS fs.FS, items []string) (result []string, err error) {
 	for _, item := range items {
-		_, err := fs.Lstat(item)
+		_, err := targetFS.Lstat(item)
 		if errors.Is(err, os.ErrNotExist) {
 			Warnf("%v does not exist, skipping\n", item)
 			continue
@@ -343,9 +350,11 @@ func collectRejectFuncs(opts BackupOptions, targets []string) (fs []RejectFunc, 
 }
 
 // collectTargets returns a list of target files/dirs from several sources.
-func collectTargets(opts BackupOptions, args []string) (targets []string, err error) {
+func collectTargets(targetFS fs.FS, opts BackupOptions, args []string) (targets []string, err error) {
 	if opts.Stdin || opts.StdinCommand {
-		return nil, nil
+		filename := path.Join("/", opts.StdinFilename)
+		targets = []string{filename}
+		return targets, nil
 	}
 
 	for _, file := range opts.FilesFrom {
@@ -401,12 +410,85 @@ func collectTargets(opts BackupOptions, args []string) (targets []string, err er
 		return nil, errors.Fatal("nothing to backup, please specify target files/dirs")
 	}
 
-	targets, err = filterExisting(targets)
+	targets, err = filterExisting(targetFS, targets)
 	if err != nil {
 		return nil, err
 	}
 
 	return targets, nil
+}
+
+func initTargetFS(
+	ctx context.Context,
+	args []string,
+	opts *BackupOptions,
+	gopts GlobalOptions,
+	timeStamp time.Time,
+	progressPrinter backup.ProgressPrinter,
+	progressReporter *backup.Progress,
+) (fs.FS, func(), error) {
+
+	if opts.Stdin {
+		if !gopts.JSON {
+			progressPrinter.V("read data from stdin")
+		}
+		filename := path.Join("/", opts.StdinFilename)
+		var source io.ReadCloser = os.Stdin
+		if opts.StdinCommand {
+			var err error
+			source, err = fs.NewCommandReader(ctx, args, globalOptions.stderr)
+			if err != nil {
+				return nil, nil, err
+			}
+		}
+
+		return &fs.Reader{
+			ModTime:    timeStamp,
+			Name:       filename,
+			Mode:       0644,
+			ReadCloser: source,
+		}, nil, nil
+	}
+
+	if opts.TargetURL != "" {
+		targetUrl, err := url.Parse(opts.TargetURL)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		switch targetUrl.Scheme {
+		case "s3", "s3+http", "s3+https":
+			fs3, err := fs.NewFS3(targetUrl)
+			if err != nil {
+				return nil, nil, err
+			}
+			return fs3, nil, nil
+		default:
+			return nil, nil, errors.Fatalf("--target-url: unsupported scheme %q", targetUrl.Scheme)
+		}
+	}
+
+	if runtime.GOOS == "windows" && opts.UseFsSnapshot {
+		if err := fs.HasSufficientPrivilegesForVSS(); err != nil {
+			return nil, nil, err
+		}
+
+		errorHandler := func(item string, err error) error {
+			return progressReporter.Error(item, err)
+		}
+
+		messageHandler := func(msg string, args ...interface{}) {
+			if !gopts.JSON {
+				progressPrinter.P(msg, args...)
+			}
+		}
+
+		localVss := fs.NewLocalVss(errorHandler, messageHandler)
+		deferFunc := func() { localVss.DeleteSnapshots() }
+		return localVss, deferFunc, nil
+	}
+
+	return fs.Local{}, nil, nil
 }
 
 // parent returns the ID of the parent snapshot. If there is none, nil is
@@ -439,13 +521,15 @@ func findParentSnapshot(ctx context.Context, repo restic.ListerLoaderUnpacked, o
 	return sn, err
 }
 
-func runBackup(ctx context.Context, opts BackupOptions, gopts GlobalOptions, term *termstatus.Terminal, args []string) error {
-	err := opts.Check(gopts, args)
-	if err != nil {
-		return err
-	}
+func runBackup(
+	ctx context.Context,
+	opts BackupOptions,
+	gopts GlobalOptions,
+	term *termstatus.Terminal,
+	args []string,
+) error {
 
-	targets, err := collectTargets(opts, args)
+	err := opts.Check(gopts, args)
 	if err != nil {
 		return err
 	}
@@ -458,15 +542,6 @@ func runBackup(ctx context.Context, opts BackupOptions, gopts GlobalOptions, ter
 		}
 	}
 
-	if gopts.verbosity >= 2 && !gopts.JSON {
-		Verbosef("open repository\n")
-	}
-
-	repo, err := OpenRepository(ctx, gopts)
-	if err != nil {
-		return err
-	}
-
 	var progressPrinter backup.ProgressPrinter
 	if gopts.JSON {
 		progressPrinter = backup.NewJSONProgress(term, gopts.verbosity)
@@ -476,6 +551,28 @@ func runBackup(ctx context.Context, opts BackupOptions, gopts GlobalOptions, ter
 	progressReporter := backup.NewProgress(progressPrinter,
 		calculateProgressInterval(!gopts.Quiet, gopts.JSON))
 	defer progressReporter.Done()
+
+	targetFS, fsDeferFunc, err := initTargetFS(ctx, args, &opts, gopts, timeStamp, progressPrinter, progressReporter)
+	if fsDeferFunc != nil {
+		defer fsDeferFunc()
+	}
+	if err != nil {
+		return err
+	}
+
+	targets, err := collectTargets(targetFS, opts, args)
+	if err != nil {
+		return err
+	}
+
+	if gopts.verbosity >= 2 && !gopts.JSON {
+		Verbosef("open repository\n")
+	}
+
+	repo, err := OpenRepository(ctx, gopts)
+	if err != nil {
+		return err
+	}
 
 	if opts.DryRun {
 		repo.SetDryRun()
@@ -548,57 +645,6 @@ func runBackup(ctx context.Context, opts BackupOptions, gopts GlobalOptions, ter
 			}
 		}
 		return true
-	}
-
-	var targetFS fs.FS = fs.Local{}
-	if runtime.GOOS == "windows" && opts.UseFsSnapshot {
-		if err = fs.HasSufficientPrivilegesForVSS(); err != nil {
-			return err
-		}
-
-		errorHandler := func(item string, err error) error {
-			return progressReporter.Error(item, err)
-		}
-
-		messageHandler := func(msg string, args ...interface{}) {
-			if !gopts.JSON {
-				progressPrinter.P(msg, args...)
-			}
-		}
-
-		localVss := fs.NewLocalVss(errorHandler, messageHandler)
-		defer localVss.DeleteSnapshots()
-		targetFS = localVss
-	}
-
-	if opts.Stdin || opts.StdinCommand {
-		if !gopts.JSON {
-			progressPrinter.V("read data from stdin")
-		}
-		filename := path.Join("/", opts.StdinFilename)
-		var source io.ReadCloser = os.Stdin
-		if opts.StdinCommand {
-			source, err = fs.NewCommandReader(ctx, args, globalOptions.stderr)
-			if err != nil {
-				return err
-			}
-		}
-		targetFS = &fs.Reader{
-			ModTime:    timeStamp,
-			Name:       filename,
-			Mode:       0644,
-			ReadCloser: source,
-		}
-		targets = []string{filename}
-	}
-
-	// TODO (guymguym) - add source url schemes
-	if true {
-		s3, err := fs.NewFS3()
-		if err != nil {
-			return err
-		}
-		targetFS = s3
 	}
 
 	wg, wgCtx := errgroup.WithContext(ctx)
