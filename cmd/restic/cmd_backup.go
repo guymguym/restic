@@ -44,8 +44,8 @@ Exit status is 3 if some source data could not be read (incomplete snapshot crea
 `,
 	PreRun: func(_ *cobra.Command, _ []string) {
 		if backupOptions.Host == "" {
-			if backupOptions.TargetFS != "" {
-				backupOptions.Host = backupOptions.TargetFS
+			if backupOptions.Target != "" {
+				backupOptions.Host = backupOptions.Target
 			} else {
 				hostname, err := os.Hostname()
 				if err != nil {
@@ -80,7 +80,7 @@ type BackupOptions struct {
 	StdinCommand      bool
 	Tags              restic.TagLists
 	Host              string
-	TargetFS          string
+	Target            string
 	FilesFrom         []string
 	FilesFromVerbatim []string
 	FilesFromRaw      []string
@@ -126,7 +126,7 @@ func init() {
 		// MarkDeprecated only returns an error when the flag could not be found
 		panic(err)
 	}
-	f.StringVarP(&backupOptions.TargetFS, "target-fs", "t", "", "backup a different filesystem type (ex. 's3:http://profile@endpoint/bucket') (default: local filesystem; see docs)")
+	f.StringVarP(&backupOptions.Target, "target", "t", "", "backup files from this target (ex. 's3:http://endpoint') (default: local filesystem)")
 	f.StringArrayVar(&backupOptions.FilesFrom, "files-from", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromVerbatim, "files-from-verbatim", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromRaw, "files-from-raw", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
@@ -139,6 +139,8 @@ func init() {
 	if runtime.GOOS == "windows" {
 		f.BoolVar(&backupOptions.UseFsSnapshot, "use-fs-snapshot", false, "use filesystem snapshot where possible (currently only Windows VSS)")
 	}
+
+	backupOptions.Target = os.Getenv("RESTIC_TARGET")
 
 	// parse read concurrency from env, on error the default value will be used
 	readConcurrency, _ := strconv.ParseUint(os.Getenv("RESTIC_READ_CONCURRENCY"), 10, 32)
@@ -449,8 +451,8 @@ func initTargetFS(
 		}, nil, nil
 	}
 
-	if opts.TargetFS != "" {
-		targetFS, err := OpenFilesystem(ctx, opts.TargetFS, gopts)
+	if opts.Target != "" {
+		targetFS, err := OpenFilesystem(ctx, opts.Target, gopts)
 		if err != nil {
 			return nil, nil, err
 		}
