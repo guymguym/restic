@@ -197,7 +197,7 @@ func OpenFilesystem(ctx context.Context, cfg Config, rt http.RoundTripper) (fs.F
 		return nil, err
 	}
 
-	return fs.NewS3Filesystem(client)
+	return fs.NewS3Filesystem(client, cfg.Bucket)
 }
 
 // Open opens the S3 backend at bucket and region. The bucket is created if it

@@ -18,6 +18,7 @@ import (
 // s3FS implements a `FS`
 type s3FS struct {
 	client *minio.Client
+	bucket string
 }
 
 // s3File implements `File`
@@ -68,21 +69,17 @@ func (f s3FileInfo) ModTime() time.Time { return f.modTime }
 func (f s3FileInfo) IsDir() bool        { return f.isDir }
 func (f s3FileInfo) Mode() fs.FileMode  { return obj_file_mode(f.isDir) }
 
-func NewS3Filesystem(client *minio.Client) (*s3FS, error) {
-	return &s3FS{client}, nil
+func NewS3Filesystem(client *minio.Client, bucket string) (*s3FS, error) {
+	return &s3FS{client: client, bucket: bucket}, nil
 }
 
 func (fs *s3FS) OpenFile(path string, flags int, mode os.FileMode) (File, error) {
-	debug.Log("start path=%q flags=%x mode=%q\n", path, flags, mode.String())
 
-	bucket, key, err := obj_parse_path(path)
-	if err != nil {
-		debug.Log("ERROR path=%q => err=%v\n", path, err)
-		return nil, err
-	}
-
-	debug.Log("OK path=%q => bucket=%q key=%q\n", path, bucket, key)
+	bucket := fs.bucket
+	key := strings.TrimPrefix(filepath.Clean(path), "/")
 	ctx, cancel := context.WithCancel(context.Background())
+
+	debug.Log("path=%q flags=%x mode=%q bucket=%q key=%q\n", path, flags, mode.String(), bucket, key)
 	return &s3File{
 		fs:     fs,
 		bucket: bucket,
@@ -95,18 +92,16 @@ func (fs *s3FS) OpenFile(path string, flags int, mode os.FileMode) (File, error)
 }
 
 func (fs *s3FS) Stat(path string) (os.FileInfo, error) {
-	debug.Log("start path=%q\n", path)
-
 	f, err := fs.OpenFile(path, 0, 0)
 	if err != nil {
 		return nil, err
 	}
-
+	defer f.Close()
 	return f.Stat()
 }
 
 func (f *s3File) Stat() (os.FileInfo, error) {
-	debug.Log("start bucket=%q key=%q\n", f.bucket, f.key)
+	debug.Log("bucket=%q key=%q\n", f.bucket, f.key)
 
 	isDir := strings.HasSuffix(f.key, "/")
 	size := int64(0)
@@ -130,16 +125,14 @@ func (f *s3File) Stat() (os.FileInfo, error) {
 				MaxKeys: 2,
 			}) {
 				if it.Err != nil {
-					debug.Log("ERROR CHECK DIR bucket=%q key=%q it.Err=%v\n",
-						f.bucket, f.key, it.Err)
+					debug.Log("CHECK DIR ERROR bucket=%q key=%q - %v\n", f.bucket, f.key, it.Err)
 					if &err != &it.Err && &err != &done {
 						err = it.Err
 						cancel(it.Err)
 					}
 				}
 				if it.Key != prefix {
-					debug.Log("CHECK DIR bucket=%q key=%q it.Key=%q\n",
-						f.bucket, f.key, it.Key)
+					debug.Log("CHECK DIR OK bucket=%q key=%q it.Key=%q\n", f.bucket, f.key, it.Key)
 					isDir = true
 					// cancel(done)
 				}
@@ -163,11 +156,10 @@ func (f *s3File) Stat() (os.FileInfo, error) {
 		modTime: modTime,
 		isDir:   isDir,
 	}, nil
-
 }
 
 func (f *s3File) Close() error {
-	debug.Log("start bucket=%q key=%q object=%p list=%p\n", f.bucket, f.key, f.object, f.list)
+	debug.Log("bucket=%q key=%q object=%p list=%p\n", f.bucket, f.key, f.object, f.list)
 
 	f.cancel()
 
@@ -186,8 +178,6 @@ func (f *s3File) Close() error {
 }
 
 func (f *s3File) Read(b []byte) (n int, err error) {
-	debug.Log("start bucket=%q key=%q\n", f.bucket, f.key)
-
 	if f.object == nil {
 		_, err := f.Seek(0, io.SeekStart)
 		if err != nil {
@@ -195,11 +185,12 @@ func (f *s3File) Read(b []byte) (n int, err error) {
 		}
 	}
 
+	debug.Log("bucket=%q key=%q len=%d\n", f.bucket, f.key, len(b))
 	return f.object.Read(b)
 }
 
 func (f *s3File) Seek(offset int64, whence int) (int64, error) {
-	debug.Log("start bucket=%q key=%q object=%p offset=%d whence=%d\n", f.bucket, f.key, f.object, offset, whence)
+	debug.Log("bucket=%q key=%q object=%p offset=%d whence=%d\n", f.bucket, f.key, f.object, offset, whence)
 
 	if f.object != nil {
 		return f.object.Seek(offset, whence)
@@ -230,7 +221,7 @@ func (f *s3File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *s3File) Readdir(n int) ([]fs.FileInfo, error) {
-	debug.Log("start bucket=%q key=%q n=%d list=%v\n", f.bucket, f.key, n, f.list)
+	debug.Log("bucket=%q key=%q n=%d list=%v\n", f.bucket, f.key, n, f.list)
 
 	if n <= 0 {
 		n = 1000
@@ -283,7 +274,6 @@ func (f *s3File) Readdir(n int) ([]fs.FileInfo, error) {
 }
 
 func (f *s3File) Readdirnames(n int) ([]string, error) {
-	// debug.Log("S3.File.Readdirnames: bucket=%q key=%q n=%d\n", f.bucket, f.key, n)
 
 	items, err := f.Readdir(n)
 	if err != nil {
@@ -316,21 +306,4 @@ func obj_file_name(bucket, key string) string {
 		return trimkey
 	}
 	return trimkey[p+1:]
-}
-
-func obj_parse_path(path string) (bucket string, key string, err error) {
-	// Trim prefix of current working directory
-	// if filepath.IsAbs(path) {
-	// 	wd, _ := os.Getwd()
-	// 	rel, err := filepath.Rel(wd, path)
-	// 	if err != nil {
-	// 		return "", "", err
-	// 	}
-	// 	path = rel
-	// }
-	path = strings.TrimPrefix(filepath.Clean(path), "/")
-
-	// Cut the path to bucket/key
-	bucket, key, _ = strings.Cut(path, "/")
-	return bucket, key, nil
 }

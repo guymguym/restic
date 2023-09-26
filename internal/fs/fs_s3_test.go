@@ -6,7 +6,7 @@ import (
 )
 
 func TestFS3(t *testing.T) {
-	fs, err := NewS3Filesystem(nil)
+	fs, err := NewS3Filesystem(nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
