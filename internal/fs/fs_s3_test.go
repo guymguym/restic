@@ -2,22 +2,16 @@ package fs
 
 import (
 	"fmt"
-	"net/url"
 	"testing"
 )
 
 func TestFS3(t *testing.T) {
-	u, err := url.Parse("s3/http://profile@endpoint")
+	fs, err := NewS3Filesystem(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	fs3, err := NewFS3(u)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	info, err := fs3.Stat("logs")
+	info, err := fs.Stat("test")
 	if err != nil {
 		t.Fatal(err)
 	}

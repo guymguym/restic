@@ -128,7 +128,7 @@ func newMinioTestSuite(t testing.TB) (*test.Suite[s3.Config], func()) {
 					break
 				}
 				return be, err
-			}, s3.Open),
+			}, s3.Open, nil),
 		}, func() {
 			defer cancel()
 			defer cleanup()

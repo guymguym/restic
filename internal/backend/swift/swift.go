@@ -36,7 +36,7 @@ type beSwift struct {
 var _ backend.Backend = &beSwift{}
 
 func NewFactory() location.Factory {
-	return location.NewHTTPBackendFactory("swift", ParseConfig, location.NoPassword, Open, Open)
+	return location.NewHTTPBackendFactory("swift", ParseConfig, location.NoPassword, Open, Open, nil)
 }
 
 // Open opens the swift backend at a container in region. The container is

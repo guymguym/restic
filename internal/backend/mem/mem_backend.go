@@ -15,6 +15,7 @@ import (
 	"github.com/restic/restic/internal/backend/util"
 	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
+	"github.com/restic/restic/internal/fs"
 )
 
 type memMap map[backend.Handle][]byte
@@ -37,6 +38,9 @@ func NewFactory() location.Factory {
 		},
 		func(_ context.Context, _ struct{}, _ http.RoundTripper) (*MemoryBackend, error) {
 			return be, nil
+		},
+		func(_ context.Context, _ struct{}, _ http.RoundTripper) (fs.FS, error) {
+			return nil, errors.Fatalf("mem fs not supported")
 		},
 	)
 }

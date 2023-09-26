@@ -2,11 +2,8 @@ package fs
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,18 +11,18 @@ import (
 	"time"
 
 	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
 )
 
-// FS3 implements a `FS`
-type FS3 struct {
+// s3FS implements a `FS`
+type s3FS struct {
 	client *minio.Client
 }
 
 // s3File implements `File`
 type s3File struct {
-	fs3    *FS3
+	fs     *s3FS
 	bucket string
 	key    string
 	ctx    context.Context
@@ -44,21 +41,21 @@ type s3FileInfo struct {
 }
 
 // statically ensure that S3 implements FS.
-var _ FS = &FS3{}
+var _ FS = &s3FS{}
 var _ File = &s3File{}
 var _ fs.FileInfo = s3FileInfo{}
 
-func (fs3 *FS3) Separator() string               { return "/" }
-func (fs3 *FS3) VolumeName(path string) string   { return "" }
-func (fs3 *FS3) Join(elem ...string) string      { return strings.Join(elem, "/") }
-func (fs3 *FS3) IsAbs(path string) bool          { return strings.HasPrefix(path, "/") }
-func (fs3 *FS3) Abs(path string) (string, error) { return "/" + strings.TrimPrefix(path, "/"), nil }
-func (fs3 *FS3) Clean(p string) string           { return filepath.Clean(p) }
-func (fs3 *FS3) Dir(path string) string          { return filepath.Dir(path) }
-func (fs3 *FS3) Base(path string) string         { return filepath.Base(path) }
+func (fs *s3FS) Separator() string               { return "/" }
+func (fs *s3FS) VolumeName(path string) string   { return "" }
+func (fs *s3FS) Join(elem ...string) string      { return strings.Join(elem, "/") }
+func (fs *s3FS) IsAbs(path string) bool          { return strings.HasPrefix(path, "/") }
+func (fs *s3FS) Abs(path string) (string, error) { return "/" + strings.TrimPrefix(path, "/"), nil }
+func (fs *s3FS) Clean(p string) string           { return filepath.Clean(p) }
+func (fs *s3FS) Dir(path string) string          { return filepath.Dir(path) }
+func (fs *s3FS) Base(path string) string         { return filepath.Base(path) }
 
-func (fs3 *FS3) Open(name string) (File, error)         { return fs3.OpenFile(name, 0, 0) }
-func (fs3 *FS3) Lstat(name string) (os.FileInfo, error) { return fs3.Stat(name) }
+func (fs *s3FS) Open(name string) (File, error)         { return fs.OpenFile(name, 0, 0) }
+func (fs *s3FS) Lstat(name string) (os.FileInfo, error) { return fs.Stat(name) }
 
 func (f *s3File) Fd() uintptr  { return 0 }
 func (f *s3File) Name() string { return obj_file_name(f.bucket, f.key) }
@@ -71,63 +68,23 @@ func (f s3FileInfo) ModTime() time.Time { return f.modTime }
 func (f s3FileInfo) IsDir() bool        { return f.isDir }
 func (f s3FileInfo) Mode() fs.FileMode  { return obj_file_mode(f.isDir) }
 
-func NewFS3(u *url.URL) (*FS3, error) {
-
-	if u.Path != "" {
-		return nil, errors.Fatalf("s3 url should not have a path")
-	}
-
-	useHTTP := u.Scheme == "s3+http"
-	username := u.User.Username()
-	secret, hasSecret := u.User.Password()
-
-	var creds *credentials.Credentials
-	if username != "" && secret != "" && hasSecret {
-		// if a secret is provided in the url use static credentials
-		creds = credentials.NewStaticV4(username, secret, "")
-	} else {
-		// using the url user as the profile/alias name in the credentials file
-		creds = credentials.NewChainCredentials([]credentials.Provider{
-			&credentials.FileAWSCredentials{Profile: username},
-			&credentials.FileMinioClient{Alias: username},
-			&credentials.EnvAWS{},
-			&credentials.EnvMinio{},
-			&credentials.IAM{
-				Client: &http.Client{
-					Transport: http.DefaultTransport,
-				},
-			},
-		})
-	}
-
-	options := &minio.Options{
-		Creds:     creds,
-		Secure:    !useHTTP,
-		Region:    "global",
-		Transport: http.DefaultTransport,
-	}
-
-	client, err := minio.New(u.Host, options)
-	if err != nil {
-		return nil, errors.Wrap(err, "minio.New")
-	}
-
-	return &FS3{client}, nil
+func NewS3Filesystem(client *minio.Client) (*s3FS, error) {
+	return &s3FS{client}, nil
 }
 
-func (fs3 *FS3) OpenFile(path string, flags int, mode os.FileMode) (File, error) {
-	fmt.Printf("S3.FS.OpenFile: START path=%q flags=%x mode=%q\n", path, flags, mode.String())
+func (fs *s3FS) OpenFile(path string, flags int, mode os.FileMode) (File, error) {
+	debug.Log("start path=%q flags=%x mode=%q\n", path, flags, mode.String())
 
 	bucket, key, err := obj_parse_path(path)
 	if err != nil {
-		fmt.Printf("S3.FS.OpenFile: ERROR path=%q => err=%v\n", path, err)
+		debug.Log("ERROR path=%q => err=%v\n", path, err)
 		return nil, err
 	}
 
-	fmt.Printf("S3.FS.OpenFile: OK path=%q => bucket=%q key=%q\n", path, bucket, key)
+	debug.Log("OK path=%q => bucket=%q key=%q\n", path, bucket, key)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &s3File{
-		fs3:    fs3,
+		fs:     fs,
 		bucket: bucket,
 		key:    key,
 		ctx:    ctx,
@@ -137,10 +94,10 @@ func (fs3 *FS3) OpenFile(path string, flags int, mode os.FileMode) (File, error)
 	}, nil
 }
 
-func (fs3 *FS3) Stat(path string) (os.FileInfo, error) {
-	fmt.Printf("S3.FS.Stat: START path=%q\n", path)
+func (fs *s3FS) Stat(path string) (os.FileInfo, error) {
+	debug.Log("start path=%q\n", path)
 
-	f, err := fs3.OpenFile(path, 0, 0)
+	f, err := fs.OpenFile(path, 0, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -149,14 +106,14 @@ func (fs3 *FS3) Stat(path string) (os.FileInfo, error) {
 }
 
 func (f *s3File) Stat() (os.FileInfo, error) {
-	fmt.Printf("S3.File.Stat: START bucket=%q key=%q\n", f.bucket, f.key)
+	debug.Log("start bucket=%q key=%q\n", f.bucket, f.key)
 
 	isDir := strings.HasSuffix(f.key, "/")
 	size := int64(0)
 	modTime := time.Now()
 
 	if !isDir {
-		stat, err := f.fs3.client.StatObject(f.ctx, f.bucket, f.key, minio.StatObjectOptions{})
+		stat, err := f.fs.client.StatObject(f.ctx, f.bucket, f.key, minio.StatObjectOptions{})
 		if err == nil {
 			size = stat.Size
 			modTime = stat.LastModified
@@ -168,12 +125,12 @@ func (f *s3File) Stat() (os.FileInfo, error) {
 			}
 			ctx, cancel := context.WithCancelCause(f.ctx)
 			done := errors.Errorf("done")
-			for it := range f.fs3.client.ListObjects(ctx, f.bucket, minio.ListObjectsOptions{
+			for it := range f.fs.client.ListObjects(ctx, f.bucket, minio.ListObjectsOptions{
 				Prefix:  prefix,
 				MaxKeys: 2,
 			}) {
 				if it.Err != nil {
-					fmt.Printf("S3.File.Stat: ERROR CHECK DIR bucket=%q key=%q it.Err=%v\n",
+					debug.Log("ERROR CHECK DIR bucket=%q key=%q it.Err=%v\n",
 						f.bucket, f.key, it.Err)
 					if &err != &it.Err && &err != &done {
 						err = it.Err
@@ -181,7 +138,7 @@ func (f *s3File) Stat() (os.FileInfo, error) {
 					}
 				}
 				if it.Key != prefix {
-					fmt.Printf("S3.File.Stat: CHECK DIR bucket=%q key=%q it.Key=%q\n",
+					debug.Log("CHECK DIR bucket=%q key=%q it.Key=%q\n",
 						f.bucket, f.key, it.Key)
 					isDir = true
 					// cancel(done)
@@ -194,9 +151,9 @@ func (f *s3File) Stat() (os.FileInfo, error) {
 	}
 
 	if isDir {
-		fmt.Printf("S3.File.Stat: IS DIR bucket=%q key=%q\n", f.bucket, f.key)
+		debug.Log("IS DIR bucket=%q key=%q\n", f.bucket, f.key)
 	} else {
-		fmt.Printf("S3.File.Stat: NOT DIR bucket=%q key=%q\n", f.bucket, f.key)
+		debug.Log("NOT DIR bucket=%q key=%q\n", f.bucket, f.key)
 	}
 
 	return s3FileInfo{
@@ -210,8 +167,7 @@ func (f *s3File) Stat() (os.FileInfo, error) {
 }
 
 func (f *s3File) Close() error {
-	fmt.Printf("S3.File.Close: START bucket=%q key=%q object=%p list=%p\n",
-		f.bucket, f.key, f.object, f.list)
+	debug.Log("start bucket=%q key=%q object=%p list=%p\n", f.bucket, f.key, f.object, f.list)
 
 	f.cancel()
 
@@ -230,7 +186,7 @@ func (f *s3File) Close() error {
 }
 
 func (f *s3File) Read(b []byte) (n int, err error) {
-	fmt.Printf("S3.File.Read: START bucket=%q key=%q\n", f.bucket, f.key)
+	debug.Log("start bucket=%q key=%q\n", f.bucket, f.key)
 
 	if f.object == nil {
 		_, err := f.Seek(0, io.SeekStart)
@@ -243,8 +199,7 @@ func (f *s3File) Read(b []byte) (n int, err error) {
 }
 
 func (f *s3File) Seek(offset int64, whence int) (int64, error) {
-	fmt.Printf("S3.File.Seek: START bucket=%q key=%q object=%p offset=%d whence=%d\n",
-		f.bucket, f.key, f.object, offset, whence)
+	debug.Log("start bucket=%q key=%q object=%p offset=%d whence=%d\n", f.bucket, f.key, f.object, offset, whence)
 
 	if f.object != nil {
 		return f.object.Seek(offset, whence)
@@ -265,7 +220,7 @@ func (f *s3File) Seek(offset int64, whence int) (int64, error) {
 		}
 	}
 
-	object, err := f.fs3.client.GetObject(f.ctx, f.bucket, f.key, options)
+	object, err := f.fs.client.GetObject(f.ctx, f.bucket, f.key, options)
 	if err != nil {
 		return 0, err
 	}
@@ -275,8 +230,7 @@ func (f *s3File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *s3File) Readdir(n int) ([]fs.FileInfo, error) {
-	fmt.Printf("S3.File.Readdir: START bucket=%q key=%q n=%d list=%v\n",
-		f.bucket, f.key, n, f.list)
+	debug.Log("start bucket=%q key=%q n=%d list=%v\n", f.bucket, f.key, n, f.list)
 
 	if n <= 0 {
 		n = 1000
@@ -290,7 +244,7 @@ func (f *s3File) Readdir(n int) ([]fs.FileInfo, error) {
 	}
 
 	if f.list == nil {
-		f.list = f.fs3.client.ListObjects(f.ctx, f.bucket, minio.ListObjectsOptions{
+		f.list = f.fs.client.ListObjects(f.ctx, f.bucket, minio.ListObjectsOptions{
 			Prefix: prefix,
 		})
 	}
@@ -298,14 +252,12 @@ func (f *s3File) Readdir(n int) ([]fs.FileInfo, error) {
 	for it := range f.list {
 
 		if it.Err != nil {
-			fmt.Printf("S3.File.Readdir: ERROR bucket=%q key=%q n=%d files=%v error=%v\n",
-				f.bucket, f.key, n, files, it.Err)
+			debug.Log("ERROR bucket=%q key=%q n=%d files=%v error=%v\n", f.bucket, f.key, n, files, it.Err)
 			return nil, it.Err
 		}
 
 		if it.Key == prefix || it.Key+"/" == prefix {
-			fmt.Printf("S3.File.Readdir: SKIP PREFIX bucket=%q key=%q n=%d files=%v it=%+v\n",
-				f.bucket, f.key, n, files, it)
+			debug.Log("SKIP PREFIX bucket=%q key=%q n=%d files=%v it=%+v\n", f.bucket, f.key, n, files, it)
 			continue
 		}
 
@@ -320,20 +272,18 @@ func (f *s3File) Readdir(n int) ([]fs.FileInfo, error) {
 		})
 
 		if len(files) >= n {
-			fmt.Printf("S3.File.Readdir: BREAK LEN bucket=%q key=%q n=%d len(files)=%d\n",
-				f.bucket, f.key, n, len(files))
+			debug.Log("BREAK LEN bucket=%q key=%q n=%d len(files)=%d\n", f.bucket, f.key, n, len(files))
 			break
 		}
 	}
 
-	fmt.Printf("S3.File.Readdir: OK bucket=%q key=%q n=%d files=%v\n",
-		f.bucket, f.key, n, files)
+	debug.Log("OK bucket=%q key=%q n=%d files=%v\n", f.bucket, f.key, n, files)
 
 	return files, nil
 }
 
 func (f *s3File) Readdirnames(n int) ([]string, error) {
-	// fmt.Printf("S3.File.Readdirnames: bucket=%q key=%q n=%d\n", f.bucket, f.key, n)
+	// debug.Log("S3.File.Readdirnames: bucket=%q key=%q n=%d\n", f.bucket, f.key, n)
 
 	items, err := f.Readdir(n)
 	if err != nil {

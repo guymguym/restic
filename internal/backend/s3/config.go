@@ -15,6 +15,7 @@ import (
 // server.
 type Config struct {
 	Endpoint     string
+	Profile      string
 	UseHTTP      bool
 	KeyID        string
 	Secret       options.SecretString
@@ -106,5 +107,8 @@ func (cfg *Config) ApplyEnvironment(prefix string) {
 	}
 	if cfg.Region == "" {
 		cfg.Region = os.Getenv(prefix + "AWS_DEFAULT_REGION")
+	}
+	if cfg.Profile == "" {
+		cfg.Profile = os.Getenv(prefix + "AWS_PROFILE")
 	}
 }

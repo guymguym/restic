@@ -17,7 +17,7 @@ func testFactory() location.Factory {
 		"local",
 		func(s string) (*testConfig, error) {
 			return &testConfig{loc: s}, nil
-		}, nil, nil, nil,
+		}, nil, nil, nil, nil,
 	)
 }
 

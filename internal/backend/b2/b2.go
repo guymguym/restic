@@ -38,7 +38,7 @@ const defaultListMaxItems = 10 * 1000
 var _ backend.Backend = &b2Backend{}
 
 func NewFactory() location.Factory {
-	return location.NewHTTPBackendFactory("b2", ParseConfig, location.NoPassword, Create, Open)
+	return location.NewHTTPBackendFactory("b2", ParseConfig, location.NoPassword, Create, Open, nil)
 }
 
 type sniffingRoundTripper struct {

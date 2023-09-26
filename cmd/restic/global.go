@@ -78,6 +78,7 @@ type GlobalOptions struct {
 
 	backends                              *location.Registry
 	backendTestHook, backendInnerTestHook backendWrapper
+	filesystems                           *location.Registry
 
 	// verbosity is set as follows:
 	//  0 means: don't print any messages except errors, this is used when --quiet is specified
@@ -111,6 +112,10 @@ func init() {
 	backends.Register(sftp.NewFactory())
 	backends.Register(swift.NewFactory())
 	globalOptions.backends = backends
+
+	filesystems := location.NewRegistry()
+	filesystems.Register(s3.NewFactory())
+	globalOptions.filesystems = filesystems
 
 	var cancel context.CancelFunc
 	internalGlobalCtx, cancel = context.WithCancel(context.Background())
@@ -554,10 +559,10 @@ func OpenRepository(ctx context.Context, opts GlobalOptions) (*repository.Reposi
 	return s, nil
 }
 
-func parseConfig(loc location.Location, opts options.Options) (interface{}, error) {
+func parseConfig(loc location.Location, opts options.Options, envPrefix string) (interface{}, error) {
 	cfg := loc.Config
-	if cfg, ok := cfg.(backend.ApplyEnvironmenter); ok {
-		cfg.ApplyEnvironment("")
+	if cfg, ok := cfg.(restic.ApplyEnvironmenter); ok {
+		cfg.ApplyEnvironment(envPrefix)
 	}
 
 	// only apply options for a particular backend here
@@ -566,7 +571,6 @@ func parseConfig(loc location.Location, opts options.Options) (interface{}, erro
 		return nil, err
 	}
 
-	debug.Log("opening %v repository at %#v", loc.Scheme, cfg)
 	return cfg, nil
 }
 
@@ -580,10 +584,12 @@ func open(ctx context.Context, s string, gopts GlobalOptions, opts options.Optio
 
 	var be backend.Backend
 
-	cfg, err := parseConfig(loc, opts)
+	cfg, err := parseConfig(loc, opts, "")
 	if err != nil {
 		return nil, err
 	}
+
+	debug.Log("opening %v repository at %#v", loc.Scheme, cfg)
 
 	rt, err := backend.Transport(globalOptions.TransportOptions)
 	if err != nil {
@@ -636,7 +642,7 @@ func create(ctx context.Context, s string, gopts GlobalOptions, opts options.Opt
 		return nil, err
 	}
 
-	cfg, err := parseConfig(loc, opts)
+	cfg, err := parseConfig(loc, opts, "")
 	if err != nil {
 		return nil, err
 	}
@@ -657,4 +663,46 @@ func create(ctx context.Context, s string, gopts GlobalOptions, opts options.Opt
 	}
 
 	return logger.New(sema.NewBackend(be)), nil
+}
+
+// Open the filesystem as specified by a location string URI.
+// Uses the parsing as the backends for repo location uri (eg. s3:http://endpoint/bucket)
+// Notice that not all backend types are supported as filesystem types (see the init of `gopts.filesystems`).
+func OpenFilesystem(ctx context.Context, s string, gopts GlobalOptions) (fs.FS, error) {
+	debug.Log("parsing filesystem location %v", location.StripPassword(gopts.filesystems, s))
+
+	loc, err := location.Parse(gopts.filesystems, s)
+	if err != nil {
+		return nil, errors.Fatalf("parsing filesystem location failed: %v", err)
+	}
+
+	cfg, err := parseConfig(loc, gopts.extended, "TARGET_")
+	if err != nil {
+		return nil, err
+	}
+
+	debug.Log("opening %v filesystem at %#v", loc.Scheme, cfg)
+
+	factory := gopts.filesystems.Lookup(loc.Scheme)
+	if factory == nil {
+		return nil, errors.Fatalf("invalid filesystem: %q", loc.Scheme)
+	}
+
+	// Q: Should we configure the Transport differently for fs vs. backend?
+	rt, err := backend.Transport(globalOptions.TransportOptions)
+	if err != nil {
+		return nil, errors.Fatal(err.Error())
+	}
+
+	// Q: Should we configure the Limiter differently for fs vs. backend?
+	// wrap the transport so that the throughput via HTTP is limited
+	lim := limiter.NewStaticLimiter(gopts.Limits)
+	rt = lim.Transport(rt)
+
+	fs, err := factory.OpenFilesystem(ctx, loc.Config, rt, lim)
+	if err != nil {
+		return nil, err
+	}
+
+	return fs, nil
 }

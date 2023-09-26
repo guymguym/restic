@@ -17,6 +17,7 @@ import (
 	"github.com/restic/restic/internal/backend/util"
 	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
+	"github.com/restic/restic/internal/fs"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -33,14 +34,12 @@ type Backend struct {
 var _ backend.Backend = &Backend{}
 
 func NewFactory() location.Factory {
-	return location.NewHTTPBackendFactory("s3", ParseConfig, location.NoPassword, Create, Open)
+	return location.NewHTTPBackendFactory("s3", ParseConfig, location.NoPassword, Create, Open, OpenFilesystem)
 }
 
 const defaultLayout = "default"
 
-func open(ctx context.Context, cfg Config, rt http.RoundTripper) (*Backend, error) {
-	debug.Log("open, config %#v", cfg)
-
+func newClient(cfg Config, rt http.RoundTripper) (*minio.Client, error) {
 	if cfg.KeyID == "" && cfg.Secret.String() != "" {
 		return nil, errors.Fatalf("unable to open S3 backend: Key ID ($AWS_ACCESS_KEY_ID) is empty")
 	} else if cfg.KeyID != "" && cfg.Secret.String() == "" {
@@ -77,6 +76,17 @@ func open(ctx context.Context, cfg Config, rt http.RoundTripper) (*Backend, erro
 	client, err := minio.New(cfg.Endpoint, options)
 	if err != nil {
 		return nil, errors.Wrap(err, "minio.New")
+	}
+
+	return client, nil
+}
+
+func open(ctx context.Context, cfg Config, rt http.RoundTripper) (*Backend, error) {
+	debug.Log("open, config %#v", cfg)
+
+	client, err := newClient(cfg, rt)
+	if err != nil {
+		return nil, err
 	}
 
 	be := &Backend{
@@ -177,6 +187,17 @@ func getCredentials(cfg Config) (*credentials.Credentials, error) {
 	}
 
 	return creds, nil
+}
+
+func OpenFilesystem(ctx context.Context, cfg Config, rt http.RoundTripper) (fs.FS, error) {
+	debug.Log("open s3, config %#v", cfg)
+
+	client, err := newClient(cfg, rt)
+	if err != nil {
+		return nil, err
+	}
+
+	return fs.NewS3Filesystem(client)
 }
 
 // Open opens the S3 backend at bucket and region. The bucket is created if it

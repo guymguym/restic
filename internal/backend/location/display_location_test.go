@@ -14,7 +14,7 @@ func TestStripPassword(t *testing.T) {
 		location.NewHTTPBackendFactory[any, backend.Backend]("test", nil,
 			func(s string) string {
 				return "cleaned"
-			}, nil, nil,
+			}, nil, nil, nil,
 		),
 	)
 

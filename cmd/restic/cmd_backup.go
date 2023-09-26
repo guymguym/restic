@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -45,8 +44,8 @@ Exit status is 3 if some source data could not be read (incomplete snapshot crea
 `,
 	PreRun: func(_ *cobra.Command, _ []string) {
 		if backupOptions.Host == "" {
-			if backupOptions.TargetURL != "" {
-				backupOptions.Host = backupOptions.TargetURL
+			if backupOptions.TargetFS != "" {
+				backupOptions.Host = backupOptions.TargetFS
 			} else {
 				hostname, err := os.Hostname()
 				if err != nil {
@@ -81,7 +80,7 @@ type BackupOptions struct {
 	StdinCommand      bool
 	Tags              restic.TagLists
 	Host              string
-	TargetURL         string
+	TargetFS          string
 	FilesFrom         []string
 	FilesFromVerbatim []string
 	FilesFromRaw      []string
@@ -127,7 +126,7 @@ func init() {
 		// MarkDeprecated only returns an error when the flag could not be found
 		panic(err)
 	}
-	f.StringVarP(&backupOptions.TargetURL, "target-url", "t", "", "base url to resolve target files for the backup (ex. 's3://user@endpoint') (default: local FS)")
+	f.StringVarP(&backupOptions.TargetFS, "target-fs", "t", "", "backup a different filesystem type (ex. 's3:http://profile@endpoint/bucket') (default: local filesystem; see docs)")
 	f.StringArrayVar(&backupOptions.FilesFrom, "files-from", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromVerbatim, "files-from-verbatim", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromRaw, "files-from-raw", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
@@ -421,7 +420,7 @@ func collectTargets(targetFS fs.FS, opts BackupOptions, args []string) (targets 
 func initTargetFS(
 	ctx context.Context,
 	args []string,
-	opts *BackupOptions,
+	opts BackupOptions,
 	gopts GlobalOptions,
 	timeStamp time.Time,
 	progressPrinter backup.ProgressPrinter,
@@ -450,22 +449,12 @@ func initTargetFS(
 		}, nil, nil
 	}
 
-	if opts.TargetURL != "" {
-		targetUrl, err := url.Parse(opts.TargetURL)
+	if opts.TargetFS != "" {
+		targetFS, err := OpenFilesystem(ctx, opts.TargetFS, gopts)
 		if err != nil {
 			return nil, nil, err
 		}
-
-		switch targetUrl.Scheme {
-		case "s3", "s3+http", "s3+https":
-			fs3, err := fs.NewFS3(targetUrl)
-			if err != nil {
-				return nil, nil, err
-			}
-			return fs3, nil, nil
-		default:
-			return nil, nil, errors.Fatalf("--target-url: unsupported scheme %q", targetUrl.Scheme)
-		}
+		return targetFS, nil, nil
 	}
 
 	if runtime.GOOS == "windows" && opts.UseFsSnapshot {
@@ -552,7 +541,7 @@ func runBackup(
 		calculateProgressInterval(!gopts.Quiet, gopts.JSON))
 	defer progressReporter.Done()
 
-	targetFS, fsDeferFunc, err := initTargetFS(ctx, args, &opts, gopts, timeStamp, progressPrinter, progressReporter)
+	targetFS, fsDeferFunc, err := initTargetFS(ctx, args, opts, gopts, timeStamp, progressPrinter, progressReporter)
 	if fsDeferFunc != nil {
 		defer fsDeferFunc()
 	}

@@ -46,7 +46,7 @@ const defaultListMaxItems = 5000
 var _ backend.Backend = &Backend{}
 
 func NewFactory() location.Factory {
-	return location.NewHTTPBackendFactory("azure", ParseConfig, location.NoPassword, Create, Open)
+	return location.NewHTTPBackendFactory("azure", ParseConfig, location.NoPassword, Create, Open, nil)
 }
 
 func open(cfg Config, rt http.RoundTripper) (*Backend, error) {
