@@ -59,7 +59,8 @@ func ParseConfig(s string) (*Config, error) {
 		}
 
 		if url.Path == "" {
-			return nil, errors.New("s3: bucket name not found")
+			// return nil, errors.New("s3: bucket name not found")
+			url.Path = "//"
 		}
 
 		bucket, path, _ := strings.Cut(url.Path[1:], "/")

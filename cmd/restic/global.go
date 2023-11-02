@@ -561,7 +561,7 @@ func OpenRepository(ctx context.Context, opts GlobalOptions) (*repository.Reposi
 
 func parseConfig(loc location.Location, opts options.Options, envPrefix string) (interface{}, error) {
 	cfg := loc.Config
-	if cfg, ok := cfg.(restic.ApplyEnvironmenter); ok {
+	if cfg, ok := cfg.(backend.ApplyEnvironmenter); ok {
 		cfg.ApplyEnvironment(envPrefix)
 	}
 

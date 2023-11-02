@@ -8,7 +8,6 @@ import (
 	"github.com/restic/restic/internal/backend/limiter"
 	"github.com/restic/restic/internal/errors"
 	"github.com/restic/restic/internal/fs"
-	"github.com/restic/restic/internal/restic"
 )
 
 type Registry struct {
@@ -36,12 +35,12 @@ type Factory interface {
 	Scheme() string
 	ParseConfig(s string) (interface{}, error)
 	StripPassword(s string) string
-	Create(ctx context.Context, cfg interface{}, rt http.RoundTripper, lim limiter.Limiter) (restic.Backend, error)
-	Open(ctx context.Context, cfg interface{}, rt http.RoundTripper, lim limiter.Limiter) (restic.Backend, error)
+	Create(ctx context.Context, cfg interface{}, rt http.RoundTripper, lim limiter.Limiter) (backend.Backend, error)
+	Open(ctx context.Context, cfg interface{}, rt http.RoundTripper, lim limiter.Limiter) (backend.Backend, error)
 	OpenFilesystem(ctx context.Context, cfg interface{}, rt http.RoundTripper, lim limiter.Limiter) (fs.FS, error)
 }
 
-type genericBackendFactory[C any, T restic.Backend] struct {
+type genericBackendFactory[C any, T backend.Backend] struct {
 	scheme           string
 	parseConfigFn    func(s string) (*C, error)
 	stripPasswordFn  func(s string) string

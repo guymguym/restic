@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -81,6 +82,7 @@ type BackupOptions struct {
 	Tags              restic.TagLists
 	Host              string
 	Target            string
+	TargetLogs        string
 	FilesFrom         []string
 	FilesFromVerbatim []string
 	FilesFromRaw      []string
@@ -126,7 +128,8 @@ func init() {
 		// MarkDeprecated only returns an error when the flag could not be found
 		panic(err)
 	}
-	f.StringVarP(&backupOptions.Target, "target", "t", "", "backup files from this target (ex. 's3:http://endpoint') (default: local filesystem)")
+	f.StringVarP(&backupOptions.Target, "target", "t", "", "backup files from this target (ex. 's3:http://endpoint/bucket') (default: local filesystem)")
+	f.StringVarP(&backupOptions.TargetLogs, "target-logs", "l", "", "read the files to backup from target logs (ex. 's3:http://endpoint/logs')")
 	f.StringArrayVar(&backupOptions.FilesFrom, "files-from", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromVerbatim, "files-from-verbatim", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.FilesFromRaw, "files-from-raw", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
@@ -141,6 +144,7 @@ func init() {
 	}
 
 	backupOptions.Target = os.Getenv("RESTIC_TARGET")
+	// backupOptions.TargetLogs = os.Getenv("RESTIC_TARGET_LOGS")
 
 	// parse read concurrency from env, on error the default value will be used
 	readConcurrency, _ := strconv.ParseUint(os.Getenv("RESTIC_READ_CONCURRENCY"), 10, 32)
@@ -350,11 +354,91 @@ func collectRejectFuncs(opts BackupOptions, targets []string) (fs []RejectFunc, 
 	return fs, nil
 }
 
+func collectTargetsFromLogs(
+	ctx context.Context,
+	targetFS fs.FS,
+	logsFS fs.FS,
+	path string,
+	targets *[]string,
+) error {
+
+	f, err := logsFS.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+
+	if fi.IsDir() {
+		names, err := f.Readdirnames(-1)
+		if err != nil {
+			return err
+		}
+
+		for _, name := range names {
+			err = collectTargetsFromLogs(ctx, targetFS, logsFS, logsFS.Join(path, name), targets)
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			logLine := scanner.Text()
+			logItems := strings.Split(logLine, " ")
+			bucket := logItems[1]
+			op := logItems[7]
+			key := logItems[8]
+			key, err = url.PathUnescape(key)
+			if err != nil {
+				return err
+			}
+			key, err := url.QueryUnescape(key)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("LOG bucket=%q key=%q op=%q\n", bucket, key, op)
+			*targets = append(*targets, key)
+		}
+
+		if err := scanner.Err(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // collectTargets returns a list of target files/dirs from several sources.
-func collectTargets(targetFS fs.FS, opts BackupOptions, args []string) (targets []string, err error) {
+func collectTargets(
+	ctx context.Context,
+	targetFS fs.FS,
+	opts BackupOptions,
+	gopts GlobalOptions,
+	args []string,
+) (targets []string, err error) {
+
 	if opts.Stdin || opts.StdinCommand {
 		filename := path.Join("/", opts.StdinFilename)
 		targets = []string{filename}
+		return targets, nil
+	}
+
+	if opts.TargetLogs != "" {
+		logsFS, err := OpenFilesystem(ctx, opts.TargetLogs, gopts)
+		if err != nil {
+			return nil, err
+		}
+
+		err = collectTargetsFromLogs(ctx, targetFS, logsFS, "/", &targets)
+		if err != nil {
+			return nil, err
+		}
+
 		return targets, nil
 	}
 
@@ -421,9 +505,9 @@ func collectTargets(targetFS fs.FS, opts BackupOptions, args []string) (targets 
 
 func initTargetFS(
 	ctx context.Context,
-	args []string,
 	opts BackupOptions,
 	gopts GlobalOptions,
+	args []string,
 	timeStamp time.Time,
 	progressPrinter backup.ProgressPrinter,
 	progressReporter *backup.Progress,
@@ -543,7 +627,7 @@ func runBackup(
 		calculateProgressInterval(!gopts.Quiet, gopts.JSON))
 	defer progressReporter.Done()
 
-	targetFS, fsDeferFunc, err := initTargetFS(ctx, args, opts, gopts, timeStamp, progressPrinter, progressReporter)
+	targetFS, fsDeferFunc, err := initTargetFS(ctx, opts, gopts, args, timeStamp, progressPrinter, progressReporter)
 	if fsDeferFunc != nil {
 		defer fsDeferFunc()
 	}
@@ -551,7 +635,7 @@ func runBackup(
 		return err
 	}
 
-	targets, err := collectTargets(targetFS, opts, args)
+	targets, err := collectTargets(ctx, targetFS, opts, gopts, args)
 	if err != nil {
 		return err
 	}

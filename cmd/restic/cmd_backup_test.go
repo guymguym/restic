@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,8 +65,9 @@ func TestCollectTargets(t *testing.T) {
 		FilesFromVerbatim: []string{f2.Name()},
 		FilesFromRaw:      []string{f3.Name()},
 	}
+	gopts := GlobalOptions{}
 
-	targets, err := collectTargets(fs.Local{}, opts, []string{filepath.Join(dir, "cmdline arg")})
+	targets, err := collectTargets(context.TODO(), fs.Local{}, opts, gopts, []string{filepath.Join(dir, "cmdline arg")})
 	rtest.OK(t, err)
 	sort.Strings(targets)
 	rtest.Equals(t, expect, targets)
